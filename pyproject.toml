@@ -1,6 +1,6 @@
 [project]
 name = "bounty_hunter"
-version = "0.0.0"
-description = "AI-augmented bug bounty toolkit (placeholder scaffold)"
+version = "0.1.0"
+description = "AI-augmented bug bounty recon + fuzz + triage + reporting"
 requires-python = ">=3.11"
 readme = "README.md"

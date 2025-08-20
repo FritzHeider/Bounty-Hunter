@@ -1,3 +1,18 @@
-# Minimal deps for placeholder scaffold (safe to expand later)
+httpx[http2]==0.27.2
 rich==13.7.1
+typer==0.12.3
 anyio==4.4.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
+beautifulsoup4==4.12.3
+lxml==5.2.2
+tldextract==5.1.2
+python-slugify==8.0.4
+tenacity==9.0.0
+python-dotenv==1.0.1
+openai>=1.42.0
+jinja2==3.1.4
+sourcemap==0.5.0
+mmh3==4.1.0
+PyJWT==2.9.0
+cryptography==43.0.1

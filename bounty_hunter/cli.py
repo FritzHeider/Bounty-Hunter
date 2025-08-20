@@ -1,10 +1,30 @@
-"""Placeholder CLI using Typer-like structure.
-Swap with the full Typer CLI when ready.
-"""
-import sys
+from __future__ import annotations
+import asyncio
+from pathlib import Path
+import typer
+from rich.console import Console
+from .config import Settings
+from .engine import run_scan
 
-def app():
-    if len(sys.argv) < 2:
-        print("Usage: python -m bounty_hunter scan --targets scope.txt --program 'Program'")
-        return
-    print("[placeholder] CLI invoked:", sys.argv[1:])
+app = typer.Typer(no_args_is_help=True)
+console = Console()
+
+@app.command()
+def scan(
+    targets: Path = typer.Option(..., exists=True, readable=True),
+    outdir: Path = typer.Option(Path("reports")),
+    program: str = typer.Option("Unnamed Program"),
+    llm: str = typer.Option("none"),
+    max_concurrency: int = typer.Option(None),
+    per_host: int = typer.Option(None),
+    template: str = typer.Option("index"),
+    oob: bool = typer.Option(False),
+):
+    s = Settings()
+    if max_concurrency: s.MAX_CONCURRENCY = max_concurrency
+    if per_host: s.PER_HOST = per_host
+    s.LLM_PROVIDER = llm.lower(); s.OOB_ENABLED = oob
+    console.rule("[bold cyan]AI Bug Bounty Hunter")
+    console.print(f"Program: [bold]{program}[/] | LLM: [bold]{s.LLM_PROVIDER}[/] | OOB: [bold]{s.OOB_ENABLED}[/]")
+    console.print(f"Concurrency: {s.MAX_CONCURRENCY} (per-host {s.PER_HOST})\n")
+    asyncio.run(run_scan(targets, outdir, program, s, template=template))
