@@ -1,0 +1,3 @@
+# Minimal deps for placeholder scaffold (safe to expand later)
+rich==13.7.1
+anyio==4.4.0

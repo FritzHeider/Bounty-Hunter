@@ -1,0 +1,6 @@
+[project]
+name = "bounty_hunter"
+version = "0.0.0"
+description = "AI-augmented bug bounty toolkit (placeholder scaffold)"
+requires-python = ">=3.11"
+readme = "README.md"
