@@ -3,6 +3,7 @@ import asyncio, httpx
 from dataclasses import dataclass
 from yarl import URL
 from .payloads import XSS_PROBES, SQLI_PROBES, SSTI_PROBES, SSRF_PROBES, COMMON_KEYS, HEADERS_MUTATIONS
+from . import mutate
 from .signatures import XSS_REFLECTION, SQLI_ERRORS, SSTI_REFLECTION
 from .report import ReportWriter
 from .llm import LLM
@@ -25,8 +26,13 @@ class FuzzCoordinator:
         async def try_payloads(category, probes):
             for key in COMMON_KEYS:
                 for p in probes:
-                    q=dict(base.query); q[key]=p; u=str(base.with_query(q))
-                    await self._request_and_check(u, "GET", category, None)
+                    for variant in mutate.generate_variants(p):
+                        q=dict(base.query); q[key]=variant; u=str(base.with_query(q))
+                        status=await self._request_and_check(u, "GET", category, None)
+                        if status in (403,406):
+                            for alt in mutate.alternate_encodings(variant):
+                                q[key]=alt; u=str(base.with_query(q))
+                                await self._request_and_check(u, "GET", category, None)
         await try_payloads("XSS", XSS_PROBES)
         await try_payloads("SQLi", SQLI_PROBES)
         await try_payloads("SSTI", SSTI_PROBES)
@@ -34,8 +40,13 @@ class FuzzCoordinator:
         ctx=f"URL: {url}\nHeaders: minimal\nObservations: n/a"
         for p in await self.llm.advise_payloads(ctx):
             for key in COMMON_KEYS:
-                q=dict(base.query); q[key]=p; u=str(base.with_query(q))
-                await self._request_and_check(u, "GET", "LLM-variant", None)
+                for variant in mutate.generate_variants(p):
+                    q=dict(base.query); q[key]=variant; u=str(base.with_query(q))
+                    status=await self._request_and_check(u, "GET", "LLM-variant", None)
+                    if status in (403,406):
+                        for alt in mutate.alternate_encodings(variant):
+                            q[key]=alt; u=str(base.with_query(q))
+                            await self._request_and_check(u, "GET", "LLM-variant", None)
     async def _mutate_headers(self, url: str):
         try:
             async with self.sem:
@@ -50,7 +61,8 @@ class FuzzCoordinator:
             async with self.sem:
                 r=await self.client.request(method, url, content=body)
                 text=(r.text or "")[:8000]
-        except Exception: return
+                status=r.status_code
+        except Exception: return None
         if category.startswith("XSS") or category=="LLM-variant":
             if XSS_REFLECTION.search(text):
                 await self._record(url, method, "Reflected XSS (indicator)", text)
@@ -63,6 +75,7 @@ class FuzzCoordinator:
         if category.startswith("SSRF") or category=="LLM-variant":
             if "169.254.169.254" in text or "127.0.0.1" in text:
                 await self._record(url, method, "SSRF indicator reflected", text)
+        return status
     async def _record(self, url: str, method: str, label: str, evidence_body: str):
         curl=f"curl -i '{url}'"; f=Finding(url=url, method=method, category=label, evidence=evidence_body[:2000], curl=curl)
         await self.reporter.write_finding(f, self.llm)
