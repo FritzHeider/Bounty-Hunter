@@ -16,3 +16,4 @@ sourcemap==0.2.1   # latest available version (fixes install error)
 mmh3==4.1.0
 PyJWT==2.9.0
 cryptography==43.0.1
+redis>=5.0.0
