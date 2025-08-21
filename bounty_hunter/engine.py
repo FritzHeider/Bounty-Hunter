@@ -16,6 +16,7 @@ from .oob import OOBSSRF
 from .signedurls import SignedURLChecker
 from .jwtcheck import JWTChecker
 from .fingerprinter import Fingerprinter
+from .subdomains import enumerate_subdomains
 
 console = Console()
 
@@ -28,11 +29,16 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
     timeout = httpx.Timeout(settings.TIMEOUT_S)
     transport = httpx.HTTPTransport(retries=settings.RETRIES)
     async with httpx.AsyncClient(http2=True, limits=limits, timeout=timeout, transport=transport, follow_redirects=False) as client:
+        subs = await enumerate_subdomains(client, targets)
+        if subs:
+            console.print(f"[cyan]＋[/] Subdomain enumerator discovered [bold]{len(subs)}[/] hosts")
+            targets.extend(subs)
         llm = LLM.from_settings(settings)
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as p:
             p.add_task(description="Harvesting endpoints…", total=None)
             harvest_res = await harvest_from_targets(client, targets, settings)
         endpoints = sorted(set(harvest_res.endpoints))
+
         console.print(f"[green]\u2714[/] Harvested [bold]{len(endpoints)}[/] candidate endpoints")
 
         analyzer = WorkflowAnalyzer(harvest_res.forms, harvest_res.navigations, llm)
