@@ -33,3 +33,15 @@ class LLM:
             resp=self.openai_client.chat.completions.create(model=self.model or "gpt-4o-mini",messages=[{"role":"user","content":prompt}],temperature=0.2)
             return resp.choices[0].message.content.strip()
         except Exception: return ""
+
+    async def analyze_workflows(self, description: str) -> str:
+        if self.provider!="openai" or not self.openai_client: return ""
+        prompt=(
+            "Identify privilege misuse or logical flaws in the following workflow description."
+            " Respond concisely.\n"+description
+        )
+        try:
+            resp=self.openai_client.chat.completions.create(model=self.model or "gpt-4o-mini",messages=[{"role":"user","content":prompt}],temperature=0.2)
+            return resp.choices[0].message.content.strip()
+        except Exception:
+            return ""
