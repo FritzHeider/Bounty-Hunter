@@ -70,8 +70,8 @@ class ReportWriter:
 {evidence}
 ```
 """; path.write_text(md)
-    def finish_index(self)->str:
-        files=sorted([f for f in self._dir().glob("*.md") if f.name!="INDEX.md"])
+    async def finish_index(self, llm: LLM | None = None)->str:
+        files=[f for f in self._dir().glob("*.md") if f.name!="INDEX.md"]
         items=[]
         for f in files:
             txt=f.read_text(errors="ignore"); first=txt.splitlines()[0].lstrip('# ').strip() if txt else f.stem
@@ -82,6 +82,12 @@ class ReportWriter:
                 "evidence": self._extract_block(txt, "Evidence"),
                 "impact": self._extract_section(txt, "Impact"),
             })
+        if llm:
+            for item in items:
+                item["severity"]=await llm.rank_findings(item.get("evidence",""))
+            items.sort(key=lambda x: x.get("severity",0), reverse=True)
+        else:
+            items.sort(key=lambda x: x["name"])
         tpl=env.get_template(self.template if self.template in TEMPLATES else "index")
         return tpl.render(title=f"Findings Index — {self.program}", items=items, program=self.program)
     @staticmethod

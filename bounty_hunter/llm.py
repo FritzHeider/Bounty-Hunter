@@ -33,3 +33,13 @@ class LLM:
             resp=self.openai_client.chat.completions.create(model=self.model or "gpt-4o-mini",messages=[{"role":"user","content":prompt}],temperature=0.2)
             return resp.choices[0].message.content.strip()
         except Exception: return ""
+    async def rank_findings(self, evidence: str) -> int:
+        if self.provider!="openai" or not self.openai_client: return 0
+        prompt=("On a scale of 1 (low) to 10 (critical), rate the potential security impact of the following evidence. Return only the number.\nEvidence:\n"+evidence)
+        try:
+            resp=self.openai_client.chat.completions.create(model=self.model or "gpt-4o-mini",messages=[{"role":"user","content":prompt}],temperature=0)
+            import re
+            m=re.search(r"(\d+)", resp.choices[0].message.content)
+            return int(m.group(1)) if m else 0
+        except Exception:
+            return 0

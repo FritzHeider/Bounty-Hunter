@@ -56,5 +56,6 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
         # OOB SSRF
         if settings.OOB_ENABLED:
             await OOBSSRF(client, reporter, settings).run(endpoints)
-        (outdir/"INDEX.md").write_text(reporter.finish_index())
+        index_txt = await reporter.finish_index(llm)
+        (outdir/"INDEX.md").write_text(index_txt)
         console.rule("[bold green]Done"); console.print(f"Reports: [bold]{outdir}[/]")
