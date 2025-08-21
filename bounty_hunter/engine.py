@@ -1,5 +1,6 @@
 from __future__ import annotations
-import anyio, httpx
+import anyio, httpx, json
+import redis.asyncio as redis
 from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -29,6 +30,8 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
     timeout = httpx.Timeout(settings.TIMEOUT_S)
     transport = httpx.HTTPTransport(retries=settings.RETRIES)
     async with httpx.AsyncClient(http2=True, limits=limits, timeout=timeout, transport=transport, follow_redirects=False) as client:
+        rc = redis.from_url(settings.REDIS_URL, decode_responses=True)
+
         subs = await enumerate_subdomains(client, targets)
         if subs:
             console.print(f"[cyan]＋[/] Subdomain enumerator discovered [bold]{len(subs)}[/] hosts")
@@ -50,27 +53,40 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
                 if llm_notes:
                     console.print(f" [LLM] {llm_notes}")
         reporter = ReportWriter(base=outdir, program=program, template=template)
-        # JS miner expands scope
         mined = await JSMiner(client, settings).mine(endpoints)
         if mined:
             console.print(f"[cyan]＋[/] JS miner discovered [bold]{len(mined)}[/] extra candidates"); endpoints.extend(mined)
-        # Core fuzz
-        await FuzzCoordinator(client=client, llm=llm, reporter=reporter, settings=settings).run(endpoints)
-        # Targeted checks
-        await RedirectChecker(client, reporter, settings).run(endpoints)
-        await AuthChecker(client, reporter, settings).run(endpoints)
-        await SignedURLChecker(client, reporter, settings).run(endpoints)
-        await JWTChecker(client, reporter, settings).run(endpoints)
-        # Fingerprints
-        for fp in await Fingerprinter(client, settings).run(endpoints):
-            await reporter.generic_finding(
-                category=f"Fingerprint: {fp.product}",
-                endpoint=fp.endpoint,
-                evidence=f"mmh3={fp.hash} headers={dict(list(fp.headers.items())[:10])}\\n{fp.notes}",
-                curl=f"curl -i '{fp.endpoint}'",
-            )
-        # OOB SSRF
-        if settings.OOB_ENABLED:
-            await OOBSSRF(client, reporter, settings).run(endpoints)
+        endpoints = sorted(set(endpoints))
+        await rc.delete(settings.REDIS_QUEUE)
+        for i in range(0, len(endpoints), settings.CHUNK_SIZE):
+            chunk = endpoints[i:i + settings.CHUNK_SIZE]
+            await rc.rpush(settings.REDIS_QUEUE, json.dumps(chunk))
+
+        async def worker():
+            while True:
+                item = await rc.blpop(settings.REDIS_QUEUE, timeout=1)
+                if not item:
+                    break
+                _, payload = item
+                chunk = json.loads(payload)
+                await FuzzCoordinator(client=client, llm=llm, reporter=reporter, settings=settings).run(chunk)
+                await RedirectChecker(client, reporter, settings).run(chunk)
+                await AuthChecker(client, reporter, settings).run(chunk)
+                await SignedURLChecker(client, reporter, settings).run(chunk)
+                await JWTChecker(client, reporter, settings).run(chunk)
+                for fp in await Fingerprinter(client, settings).run(chunk):
+                    await reporter.generic_finding(
+                        category=f"Fingerprint: {fp.product}",
+                        endpoint=fp.endpoint,
+                        evidence=f"mmh3={fp.hash} headers={dict(list(fp.headers.items())[:10])}\\n{fp.notes}",
+                        curl=f"curl -i '{fp.endpoint}'",
+                    )
+                if settings.OOB_ENABLED:
+                    await OOBSSRF(client, reporter, settings).run(chunk)
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(settings.WORKERS):
+                tg.start_soon(worker)
+        await rc.aclose()
         (outdir/"INDEX.md").write_text(reporter.finish_index())
         console.rule("[bold green]Done"); console.print(f"Reports: [bold]{outdir}[/]")

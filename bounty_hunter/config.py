@@ -27,7 +27,12 @@ class Settings(BaseSettings):
     # Fingerprinter DB (optional local file)
     CVE_FAVICON_DB: str | None = Field(default=None)
 
-    # Findings
+     # Task queue
+    REDIS_URL: str = Field(default="redis://localhost:6379/0", env="BH_REDIS_URL")
+    REDIS_QUEUE: str = Field(default="bh:tasks", env="BH_REDIS_QUEUE")
+    CHUNK_SIZE: int = Field(default=50, env="BH_CHUNK_SIZE")
+    WORKERS: int = Field(default=4, env="BH_WORKERS")
+     # Findings
     CONFIDENCE_THRESHOLD: float = Field(default=0.5, env="BH_CONFIDENCE_THRESHOLD")
-
+ 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
