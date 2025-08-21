@@ -1,5 +1,6 @@
 from __future__ import annotations
 import anyio, httpx
+from yarl import URL
 from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -26,18 +27,31 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
     limits = httpx.Limits(max_connections=settings.MAX_CONCURRENCY, max_keepalive_connections=settings.MAX_CONCURRENCY)
     timeout = httpx.Timeout(settings.TIMEOUT_S)
     transport = httpx.HTTPTransport(retries=settings.RETRIES)
-    async with httpx.AsyncClient(http2=True, limits=limits, timeout=timeout, transport=transport, follow_redirects=False) as client:
+    async with httpx.AsyncClient(
+        http2=True,
+        limits=limits,
+        timeout=timeout,
+        transport=transport,
+        follow_redirects=False,
+        max_redirects=settings.MAX_REDIRECT_DEPTH,
+    ) as client:
         llm = LLM.from_settings(settings)
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as p:
             p.add_task(description="Harvesting endpoints…", total=None)
             endpoints = await harvest_from_targets(client, targets, settings)
         endpoints = sorted(set(endpoints))
+        if settings.ALLOWED_HOSTS:
+            endpoints = [u for u in endpoints if URL(u).host in settings.ALLOWED_HOSTS]
+        if not endpoints:
+            console.print("[bold red]No endpoints within allowed hosts."); return
         console.print(f"[green]\u2714[/] Harvested [bold]{len(endpoints)}[/] candidate endpoints")
         reporter = ReportWriter(base=outdir, program=program, template=template)
         # JS miner expands scope
         mined = await JSMiner(client, settings).mine(endpoints)
         if mined:
             console.print(f"[cyan]＋[/] JS miner discovered [bold]{len(mined)}[/] extra candidates"); endpoints.extend(mined)
+            if settings.ALLOWED_HOSTS:
+                endpoints = [u for u in endpoints if URL(u).host in settings.ALLOWED_HOSTS]
         # Core fuzz
         await FuzzCoordinator(client=client, llm=llm, reporter=reporter, settings=settings).run(endpoints)
         # Targeted checks

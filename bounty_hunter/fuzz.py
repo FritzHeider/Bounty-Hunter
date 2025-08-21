@@ -1,6 +1,7 @@
 from __future__ import annotations
-import asyncio, httpx
+import asyncio, httpx, random
 from dataclasses import dataclass
+from urllib.parse import urljoin
 from yarl import URL
 from .payloads import XSS_PROBES, SQLI_PROBES, SSTI_PROBES, SSRF_PROBES, COMMON_KEYS, HEADERS_MUTATIONS
 from .signatures import XSS_REFLECTION, SQLI_ERRORS, SSTI_REFLECTION
@@ -15,6 +16,37 @@ class FuzzCoordinator:
     def __init__(self, client: httpx.AsyncClient, llm: LLM, reporter: ReportWriter, settings):
         self.client=client; self.llm=llm; self.reporter=reporter; self.settings=settings
         self.sem=asyncio.Semaphore(settings.MAX_CONCURRENCY)
+
+    async def _fetch(self, method: str, url: str, *, headers=None, body: str|None=None):
+        await asyncio.sleep(random.uniform(0, self.settings.JITTER_S))
+        current=url; depth=0
+        while True:
+            if self.settings.ALLOWED_HOSTS and URL(current).host not in self.settings.ALLOWED_HOSTS:
+                return None
+            async with self.sem:
+                try:
+                    async with self.client.stream(method, current, headers=headers, content=body, follow_redirects=False) as r:
+                        if r.is_redirect:
+                            depth+=1
+                            if depth>self.settings.MAX_REDIRECT_DEPTH:
+                                return None
+                            loc=r.headers.get("Location")
+                            if not loc:
+                                return None
+                            nxt=urljoin(current, loc)
+                            current=nxt
+                            continue
+                        if int(r.headers.get("Content-Length","0"))>self.settings.MAX_RESPONSE_SIZE:
+                            return None
+                        buf=b""
+                        async for chunk in r.aiter_bytes():
+                            buf+=chunk
+                            if len(buf)>self.settings.MAX_RESPONSE_SIZE:
+                                return None
+                        text=buf.decode(errors="ignore")
+                        return text
+                except Exception:
+                    return None
     async def run(self, endpoints: list[str]):
         await asyncio.gather(*(self.scan_endpoint(u) for u in endpoints))
     async def scan_endpoint(self, url: str):
@@ -37,20 +69,24 @@ class FuzzCoordinator:
                 q=dict(base.query); q[key]=p; u=str(base.with_query(q))
                 await self._request_and_check(u, "GET", "LLM-variant", None)
     async def _mutate_headers(self, url: str):
-        try:
-            async with self.sem:
-                r=await self.client.get(url, headers=HEADERS_MUTATIONS)
-                body=(r.text or "")[:4000]
-                if any(sig.search(body) for sig in [XSS_REFLECTION, SSTI_REFLECTION]):
-                    f=Finding(url=url, method="GET", category="Header-reflection", evidence=body[:800], curl=f"curl -i -H 'X-Forwarded-Host: evil.example' '{url}'")
-                    await self.reporter.write_finding(f, self.llm)
-        except Exception: return
+        body = await self._fetch("GET", url, headers=HEADERS_MUTATIONS)
+        if not body:
+            return
+        snippet = body[:4000]
+        if any(sig.search(snippet) for sig in [XSS_REFLECTION, SSTI_REFLECTION]):
+            f = Finding(
+                url=url,
+                method="GET",
+                category="Header-reflection",
+                evidence=snippet[:800],
+                curl=f"curl -i -H 'X-Forwarded-Host: evil.example' '{url}'",
+            )
+            await self.reporter.write_finding(f, self.llm)
     async def _request_and_check(self, url: str, method: str, category: str, body: str|None):
-        try:
-            async with self.sem:
-                r=await self.client.request(method, url, content=body)
-                text=(r.text or "")[:8000]
-        except Exception: return
+        text = await self._fetch(method, url, body=body)
+        if not text:
+            return
+        text = text[:8000]
         if category.startswith("XSS") or category=="LLM-variant":
             if XSS_REFLECTION.search(text):
                 await self._record(url, method, "Reflected XSS (indicator)", text)
