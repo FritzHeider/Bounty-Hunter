@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     INTERACTSH_TOKEN: str | None = Field(default=None)
     INTERACTSH_POLL_SECONDS: int = Field(default=8)
 
+    # Module toggles
+    JS_MINER_ENABLED: bool = Field(default=True, env="BH_JS_MINER_ENABLED")
+    FUZZ_ENABLED: bool = Field(default=True, env="BH_FUZZ_ENABLED")
+    REDIRECTS_ENABLED: bool = Field(default=True, env="BH_REDIRECTS_ENABLED")
+    AUTHCHECK_ENABLED: bool = Field(default=True, env="BH_AUTHCHECK_ENABLED")
+    SIGNEDURL_ENABLED: bool = Field(default=True, env="BH_SIGNEDURL_ENABLED")
+    JWTCHECK_ENABLED: bool = Field(default=True, env="BH_JWTCHECK_ENABLED")
+    FINGERPRINTER_ENABLED: bool = Field(default=True, env="BH_FINGERPRINTER_ENABLED")
+
     # Fingerprinter DB (optional local file)
     CVE_FAVICON_DB: str | None = Field(default=None)
 

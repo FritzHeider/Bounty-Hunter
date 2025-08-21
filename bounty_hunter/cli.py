@@ -19,6 +19,7 @@ def scan(
     per_host: int = typer.Option(None),
     template: str = typer.Option("index"),
     oob: bool = typer.Option(False),
+    resume: bool = typer.Option(False, help="Resume from previous state"),
 ):
     s = Settings()
     if max_concurrency: s.MAX_CONCURRENCY = max_concurrency
@@ -27,4 +28,4 @@ def scan(
     console.rule("[bold cyan]AI Bug Bounty Hunter")
     console.print(f"Program: [bold]{program}[/] | LLM: [bold]{s.LLM_PROVIDER}[/] | OOB: [bold]{s.OOB_ENABLED}[/]")
     console.print(f"Concurrency: {s.MAX_CONCURRENCY} (per-host {s.PER_HOST})\n")
-    asyncio.run(run_scan(targets, outdir, program, s, template=template))
+    asyncio.run(run_scan(targets, outdir, program, s, template=template, resume=resume))
