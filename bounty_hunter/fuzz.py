@@ -3,13 +3,13 @@ import asyncio, httpx
 from dataclasses import dataclass
 from yarl import URL
 from .payloads import XSS_PROBES, SQLI_PROBES, SSTI_PROBES, SSRF_PROBES, COMMON_KEYS, HEADERS_MUTATIONS
-from .signatures import XSS_REFLECTION, SQLI_ERRORS, SSTI_REFLECTION
+from .signatures import XSS_PATTERNS, SQLI_ERRORS, SSTI_PATTERNS, RESPONSE_TIME_THRESHOLD
 from .report import ReportWriter
 from .llm import LLM
 
 @dataclass
 class Finding:
-    url: str; method: str; category: str; evidence: str; curl: str
+    url: str; method: str; category: str; evidence: str; curl: str; confidence: float
 
 class FuzzCoordinator:
     def __init__(self, client: httpx.AsyncClient, llm: LLM, reporter: ReportWriter, settings):
@@ -41,28 +41,58 @@ class FuzzCoordinator:
             async with self.sem:
                 r=await self.client.get(url, headers=HEADERS_MUTATIONS)
                 body=(r.text or "")[:4000]
-                if any(sig.search(body) for sig in [XSS_REFLECTION, SSTI_REFLECTION]):
-                    f=Finding(url=url, method="GET", category="Header-reflection", evidence=body[:800], curl=f"curl -i -H 'X-Forwarded-Host: evil.example' '{url}'")
-                    await self.reporter.write_finding(f, self.llm)
-        except Exception: return
+                if any(sig.search(body) for sig in (XSS_PATTERNS+SSTI_PATTERNS)):
+                    await self._record(url, "GET", "Header-reflection", body[:800], 0.9)
+        except Exception:
+            return
     async def _request_and_check(self, url: str, method: str, category: str, body: str|None):
         try:
             async with self.sem:
+                start=asyncio.get_event_loop().time()
                 r=await self.client.request(method, url, content=body)
+                elapsed=asyncio.get_event_loop().time()-start
                 text=(r.text or "")[:8000]
-        except Exception: return
+        except Exception:
+            return
+
+        async def confirm()->tuple[str,float]:
+            async with self.sem:
+                s=asyncio.get_event_loop().time()
+                r2=await self.client.request(method, url, content=body)
+                return (r2.text or "")[:8000], asyncio.get_event_loop().time()-s
+
         if category.startswith("XSS") or category=="LLM-variant":
-            if XSS_REFLECTION.search(text):
-                await self._record(url, method, "Reflected XSS (indicator)", text)
+            if any(sig.search(text) for sig in XSS_PATTERNS):
+                ctext,_=await confirm()
+                conf=0.9 if any(sig.search(ctext) for sig in XSS_PATTERNS) else 0.4
+                await self._record(url, method, "Reflected XSS (indicator)", text, conf)
         if category.startswith("SQLi") or category=="LLM-variant":
-            if any(sig.search(text) for sig in SQLI_ERRORS):
-                await self._record(url, method, "Potential SQLi (error-based)", text)
+            hit=any(sig.search(text) for sig in SQLI_ERRORS)
+            delay=elapsed>RESPONSE_TIME_THRESHOLD
+            if hit or delay:
+                ctext,celapsed=await confirm()
+                confirm_hit=any(sig.search(ctext) for sig in SQLI_ERRORS)
+                confirm_delay=celapsed>RESPONSE_TIME_THRESHOLD
+                conf=0.9 if (hit and confirm_hit) or (delay and confirm_delay) else 0.4
+                label="Potential SQLi (error-based)" if hit else "Potential SQLi (time-based)"
+                await self._record(url, method, label, text, conf)
         if category.startswith("SSTI") or category=="LLM-variant":
-            if SSTI_REFLECTION.search(text):
-                await self._record(url, method, "Template Injection indicator", text)
+            if any(sig.search(text) for sig in SSTI_PATTERNS):
+                ctext,_=await confirm()
+                conf=0.9 if any(sig.search(ctext) for sig in SSTI_PATTERNS) else 0.4
+                await self._record(url, method, "Template Injection indicator", text, conf)
         if category.startswith("SSRF") or category=="LLM-variant":
-            if "169.254.169.254" in text or "127.0.0.1" in text:
-                await self._record(url, method, "SSRF indicator reflected", text)
-    async def _record(self, url: str, method: str, label: str, evidence_body: str):
-        curl=f"curl -i '{url}'"; f=Finding(url=url, method=method, category=label, evidence=evidence_body[:2000], curl=curl)
+            hit="169.254.169.254" in text or "127.0.0.1" in text
+            if hit:
+                ctext,_=await confirm()
+                confirm_hit="169.254.169.254" in ctext or "127.0.0.1" in ctext
+                conf=0.9 if confirm_hit else 0.4
+                await self._record(url, method, "SSRF indicator reflected", text, conf)
+
+    async def _record(self, url: str, method: str, label: str, evidence_body: str, confidence: float):
+        print(f"[{confidence:.2f}] {label} at {url}")
+        if confidence < getattr(self.settings, "CONFIDENCE_THRESHOLD", 0.0):
+            return
+        curl=f"curl -i '{url}'"
+        f=Finding(url=url, method=method, category=label, evidence=evidence_body[:2000], curl=curl, confidence=confidence)
         await self.reporter.write_finding(f, self.llm)

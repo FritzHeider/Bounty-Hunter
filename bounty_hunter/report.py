@@ -31,9 +31,10 @@ class ReportWriter:
         md=f"""
 # {f.category}
 
-**Program:** {self.program}  
-**Endpoint:** `{f.url}`  
+**Program:** {self.program}
+**Endpoint:** `{f.url}`
 **Method:** `{f.method}`
+**Confidence:** {getattr(f,'confidence',0):.2f}
 
 ## Proof of Concept
 ```bash

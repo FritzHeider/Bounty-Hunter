@@ -27,4 +27,7 @@ class Settings(BaseSettings):
     # Fingerprinter DB (optional local file)
     CVE_FAVICON_DB: str | None = Field(default=None)
 
+    # Findings
+    CONFIDENCE_THRESHOLD: float = Field(default=0.5, env="BH_CONFIDENCE_THRESHOLD")
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
