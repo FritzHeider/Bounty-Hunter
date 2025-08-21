@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from .config import Settings
 from .harvest import harvest_from_targets
+from .workflow import WorkflowAnalyzer
 from .fuzz import FuzzCoordinator
 from .report import ReportWriter
 from .llm import LLM
@@ -16,6 +17,7 @@ from .oob import OOBSSRF
 from .signedurls import SignedURLChecker
 from .jwtcheck import JWTChecker
 from .fingerprinter import Fingerprinter
+from .subdomains import enumerate_subdomains
 
 console = Console()
 
@@ -29,12 +31,27 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
     transport = httpx.HTTPTransport(retries=settings.RETRIES)
     async with httpx.AsyncClient(http2=True, limits=limits, timeout=timeout, transport=transport, follow_redirects=False) as client:
         rc = redis.from_url(settings.REDIS_URL, decode_responses=True)
+
+        subs = await enumerate_subdomains(client, targets)
+        if subs:
+            console.print(f"[cyan]＋[/] Subdomain enumerator discovered [bold]{len(subs)}[/] hosts")
+            targets.extend(subs)
         llm = LLM.from_settings(settings)
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as p:
             p.add_task(description="Harvesting endpoints…", total=None)
-            endpoints = await harvest_from_targets(client, targets, settings)
-        endpoints = sorted(set(endpoints))
+            harvest_res = await harvest_from_targets(client, targets, settings)
+        endpoints = sorted(set(harvest_res.endpoints))
+
         console.print(f"[green]\u2714[/] Harvested [bold]{len(endpoints)}[/] candidate endpoints")
+
+        analyzer = WorkflowAnalyzer(harvest_res.forms, harvest_res.navigations, llm)
+        for wf, issues, llm_notes in await analyzer.analyze():
+            if issues or llm_notes:
+                console.print("[yellow]Workflow issues detected:[/]")
+                for issue in issues:
+                    console.print(f" - {issue}")
+                if llm_notes:
+                    console.print(f" [LLM] {llm_notes}")
         reporter = ReportWriter(base=outdir, program=program, template=template)
         mined = await JSMiner(client, settings).mine(endpoints)
         if mined:
