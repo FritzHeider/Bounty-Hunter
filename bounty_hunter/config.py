@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     RETRIES: int = Field(default=2, env="BH_RETRY")
     MAX_CONCURRENCY: int = Field(default=40, env="BH_MAX_CONCURRENCY")
     PER_HOST: int = Field(default=5, env="BH_PER_HOST")
+    PROXY_URL: str | None = Field(default=None, env="BH_PROXY_URL")
 
     # LLM
     LLM_PROVIDER: str = "none"  # none|openai
