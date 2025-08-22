@@ -182,7 +182,7 @@ class ReportWriter:
         )
         path.write_text(md, encoding="utf-8")
 
-    def finish_index(self) -> str:
+    def finish_index(self, scope_note: str = "") -> str:
         """
         Render an index for all findings in the directory (excluding INDEX.md).
         Returns the markdown string (caller may choose to write it).
@@ -238,9 +238,10 @@ class ReportWriter:
             chains=chains,
         )
 
+
     # Optional convenience: write the index file to disk.
-    def write_index(self) -> Path:
-        content = self.finish_index()
+    def write_index(self, scope_note: str = "") -> Path:
+        content = self.finish_index(scope_note)
         out = self._dir() / "INDEX.md"
         out.write_text(content, encoding="utf-8")
         return out

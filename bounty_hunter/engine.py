@@ -16,8 +16,10 @@ from .jsminer import JSMiner
 from .oob import OOBSSRF
 from .signedurls import SignedURLChecker
 from .jwtcheck import JWTChecker
+from .access_control import AccessControl
 from .fingerprinter import Fingerprinter
 from .subdomains import enumerate_subdomains
+from scripts.diff_scope import diff_scope
 
 console = Console()
 
@@ -40,7 +42,7 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as p:
             p.add_task(description="Harvesting endpoints…", total=None)
             harvest_res = await harvest_from_targets(client, targets, settings)
-        endpoints = sorted(set(harvest_res.endpoints))
+        endpoints = sorted(set(harvest_res.endpoints + subs))
 
         console.print(f"[green]\u2714[/] Harvested [bold]{len(endpoints)}[/] candidate endpoints")
 
@@ -57,6 +59,23 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
         if mined:
             console.print(f"[cyan]＋[/] JS miner discovered [bold]{len(mined)}[/] extra candidates"); endpoints.extend(mined)
         endpoints = sorted(set(endpoints))
+
+        # Persist endpoints for this scan and compare with previous scope
+        ep_file = outdir / "endpoints.json"
+        ep_file.write_text(json.dumps(endpoints, indent=2))
+        scope_note = ""
+        parent = outdir.parent
+        prev_dirs = sorted(
+            [d for d in parent.iterdir() if d.is_dir() and d.name.isdigit() and d.name != outdir.name],
+            key=lambda p: int(p.name),
+        )
+        if prev_dirs:
+            prev_ep = prev_dirs[-1] / "endpoints.json"
+            if prev_ep.exists():
+                added, removed = diff_scope(prev_ep, ep_file)
+                if added or removed:
+                    scope_note = f"+{len(added)}/-{len(removed)} endpoints since last scan"
+
         await rc.delete(settings.REDIS_QUEUE)
         for i in range(0, len(endpoints), settings.CHUNK_SIZE):
             chunk = endpoints[i:i + settings.CHUNK_SIZE]
@@ -74,6 +93,7 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
                 await AuthChecker(client, reporter, settings).run(chunk)
                 await SignedURLChecker(client, reporter, settings).run(chunk)
                 await JWTChecker(client, reporter, settings).run(chunk)
+                await AccessControl(client, reporter, settings).run(chunk)
                 for fp in await Fingerprinter(client, settings).run(chunk):
                     await reporter.generic_finding(
                         category=f"Fingerprint: {fp.product}",
@@ -88,5 +108,5 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
             for _ in range(settings.WORKERS):
                 tg.start_soon(worker)
         await rc.aclose()
-        (outdir/"INDEX.md").write_text(reporter.finish_index())
+        (outdir/"INDEX.md").write_text(reporter.finish_index(scope_note))
         console.rule("[bold green]Done"); console.print(f"Reports: [bold]{outdir}[/]")

@@ -1,12 +1,20 @@
 from __future__ import annotations
-import asyncio, httpx
+
+import asyncio
+import httpx
 from yarl import URL
 
-async def enumerate_subdomains(client: httpx.AsyncClient, targets: list[str]) -> list[str]:
-    """Enumerate subdomains for the given targets using open data sources.
+__all__ = ["enumerate_subdomains"]
 
-    Currently queries crt.sh and the bufferover DNS database (used by Amass).
-    Returns a list of base URLs (https) for discovered subdomains.
+async def enumerate_subdomains(client: httpx.AsyncClient, targets: list[str]) -> list[str]:
+    """Enumerate subdomains for the supplied ``targets``.
+
+    The routine performs lightweight lookups against two open data sources:
+
+    * ``crt.sh`` – certificate transparency logs
+    * ``dns.bufferover.run`` – the dataset used by Amass
+
+    Results are returned as ``https`` base URLs for any discovered hosts.
     """
     sem = asyncio.Semaphore(20)
     found: set[str] = set()
