@@ -1,7 +1,9 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Tuple, Dict, Any, List
+from typing import Tuple, Dict, Any, List, Set
+from collections import defaultdict
+from urllib.parse import urlparse, parse_qs
 
 from slugify import slugify
 from jinja2 import Environment, DictLoader, select_autoescape
@@ -12,6 +14,7 @@ except Exception:  # soft-dep fallback
     CVSS3 = None  # type: ignore
 
 from .llm import LLM
+from .chain_analyzer import ChainAnalyzer
 
 
 def calculate_cvss(vector: str) -> Tuple[float, str]:
@@ -35,6 +38,8 @@ TEMPLATES: Dict[str, str] = {
         "# {{ title }}\n\n"
         "{% for item in items %}- [{{ item.name }}]({{ item.filename }}) — "
         "{{ item.category }} ({{ item.severity or 'TBD' }})\n{% endfor %}\n"
+        "{% if chains %}## Chained Recommendations\n"
+        "{% for c in chains %}- {{ c }}\n{% endfor %}\n{% endif %}"
     ),
     "h1": (
         "# {{ title }} (HackerOne)\n\n"
@@ -77,6 +82,7 @@ class ReportWriter:
     base: Path
     program: str
     template: str = "index"
+    graph: Dict[str, Set[str]] = field(default_factory=dict)
 
     def _dir(self) -> Path:
         d = self.base
@@ -202,8 +208,35 @@ class ReportWriter:
                     "artifact": self._artifact_snippet(fpath.stem),
                 }
             )
+        # Build a graph linking findings with shared parameters or endpoints
+        param_map: Dict[str, Set[str]] = defaultdict(set)
+        path_map: Dict[str, Set[str]] = defaultdict(set)
+        for item in items:
+            endpoint = item.get("endpoint", "")
+            if not endpoint:
+                continue
+            parsed = urlparse(endpoint)
+            if parsed.path:
+                path_map[parsed.path].add(item["name"])
+            for p in parse_qs(parsed.query).keys():
+                param_map[p].add(item["name"])
+
+        graph: Dict[str, Set[str]] = {item["name"]: set() for item in items}
+        for names in list(param_map.values()) + list(path_map.values()):
+            for src in names:
+                graph[src].update(names - {src})
+        self.graph = graph
+
+        # Analyze potential exploit chains
+        chains = ChainAnalyzer(graph, items).suggest()
+
         tpl = env.get_template(self.template if self.template in TEMPLATES else "index")
-        return tpl.render(title=f"Findings Index — {self.program}", items=items, program=self.program)
+        return tpl.render(
+            title=f"Findings Index — {self.program}",
+            items=items,
+            program=self.program,
+            chains=chains,
+        )
 
     # Optional convenience: write the index file to disk.
     def write_index(self) -> Path:
