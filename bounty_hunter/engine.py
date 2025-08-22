@@ -31,7 +31,15 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
     limits = httpx.Limits(max_connections=settings.MAX_CONCURRENCY, max_keepalive_connections=settings.MAX_CONCURRENCY)
     timeout = httpx.Timeout(settings.TIMEOUT_S)
     transport = httpx.HTTPTransport(retries=settings.RETRIES)
-    async with httpx.AsyncClient(http2=True, limits=limits, timeout=timeout, transport=transport, follow_redirects=False) as client:
+    proxies = settings.PROXY_URL or None
+    async with httpx.AsyncClient(
+        http2=True,
+        limits=limits,
+        timeout=timeout,
+        transport=transport,
+        follow_redirects=False,
+        proxies=proxies,
+    ) as client:
         rc = redis.from_url(settings.REDIS_URL, decode_responses=True)
 
         subs = await enumerate_subdomains(client, targets)

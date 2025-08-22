@@ -115,7 +115,7 @@ class ReportWriter:
         score, severity = calculate_cvss(vector) if vector else (0.0, "")
 
         # Optional fields
-        headers = getattr(f, "headers", "") or ""
+        headers = self._scrub_headers(getattr(f, "headers", "") or "")
         body = getattr(f, "body", "") or ""
         confidence = float(getattr(f, "confidence", 0.0))
 
@@ -169,13 +169,14 @@ class ReportWriter:
             else ""
         )
 
+        scrubbed_headers = self._scrub_headers(headers)
         md = (
             f"# {category}\n\n"
             f"**Program:** {self.program}\n"
             f"**Endpoint:** `{endpoint}`\n"
             f"{cvss_block}"
             f"## Proof of Concept\n```bash\n{curl}\n```\n"
-            f"{f'## Request Headers\n```http\n{headers}\n```\n' if headers else ''}"
+            f"{f'## Request Headers\n```http\n{scrubbed_headers}\n```\n' if scrubbed_headers else ''}"
             f"{f'## Request Body\n```http\n{body}\n```\n' if body else ''}"
             f"## Evidence (Truncated)\n```text\n{evidence}\n```\n"
             f"{(artifact + '\n') if artifact else ''}"
@@ -199,7 +200,7 @@ class ReportWriter:
                     "category": first,
                     "endpoint": self._extract_field(txt, "Endpoint:"),
                     "curl": self._extract_block(txt, "Proof of Concept"),
-                    "headers": self._extract_block(txt, "Request Headers"),
+                    "headers": self._scrub_headers(self._extract_block(txt, "Request Headers")),
                     "body": self._extract_block(txt, "Request Body"),
                     "evidence": self._extract_block(txt, "Evidence"),
                     "impact": self._extract_section(txt, "Impact"),
@@ -273,6 +274,28 @@ class ReportWriter:
     def _extract_section(txt: str, header: str) -> str:
         i = txt.lower().find(header.lower())
         return "" if i == -1 else txt[i : i + 400]
+
+    @staticmethod
+    def _scrub_headers(headers: str) -> str:
+        """
+        Redact sensitive header values before they are written to disk.
+        """
+        sensitive = {
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+            "x-api-key",
+            "x-api-token",
+        }
+        cleaned = []
+        for line in headers.splitlines():
+            name, sep, value = line.partition(":")
+            if sep and name.strip().lower() in sensitive:
+                cleaned.append(f"{name}{sep} [REDACTED]")
+            else:
+                cleaned.append(line)
+        return "\n".join(cleaned)
 
     @staticmethod
     def _artifact_snippet(slug: str) -> str:
