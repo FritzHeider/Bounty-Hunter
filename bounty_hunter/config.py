@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Fingerprinter DB (optional local file)
     CVE_FAVICON_DB: str | None = Field(default=None)
 
+    # Access control testing
+    ROLE_TOKENS: dict[str, str] = Field(default_factory=dict, env="BH_ROLE_TOKENS")
+
      # Task queue
     REDIS_URL: str = Field(default="redis://localhost:6379/0", env="BH_REDIS_URL")
     REDIS_QUEUE: str = Field(default="bh:tasks", env="BH_REDIS_QUEUE")

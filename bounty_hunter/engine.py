@@ -16,6 +16,7 @@ from .jsminer import JSMiner
 from .oob import OOBSSRF
 from .signedurls import SignedURLChecker
 from .jwtcheck import JWTChecker
+from .access_control import AccessControl
 from .fingerprinter import Fingerprinter
 from .subdomains import enumerate_subdomains
 
@@ -74,6 +75,7 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
                 await AuthChecker(client, reporter, settings).run(chunk)
                 await SignedURLChecker(client, reporter, settings).run(chunk)
                 await JWTChecker(client, reporter, settings).run(chunk)
+                await AccessControl(client, reporter, settings).run(chunk)
                 for fp in await Fingerprinter(client, settings).run(chunk):
                     await reporter.generic_finding(
                         category=f"Fingerprint: {fp.product}",

