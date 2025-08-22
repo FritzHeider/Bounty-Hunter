@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, Sequence, Iterable, Mapping
+from collections import deque
 
 import httpx
 from yarl import URL
@@ -50,7 +51,10 @@ class FuzzCoordinator:
         self.llm = llm
         self.reporter = reporter
         self.settings = settings
-        self.sem = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENCY", 10))
+        self._max_concurrency = getattr(settings, "MAX_CONCURRENCY", 10)
+        self._current_concurrency = self._max_concurrency
+        self.sem = asyncio.Semaphore(self._current_concurrency)
+        self._error_window = deque(maxlen=20)
         self._rtt_threshold = float(getattr(settings, "RESPONSE_TIME_THRESHOLD", DEFAULT_RTT_THRESHOLD))
         self._confidence_threshold = float(getattr(settings, "CONFIDENCE_THRESHOLD", 0.0))
 
@@ -134,6 +138,7 @@ class FuzzCoordinator:
                 await self._record(url, "GET", "Header-reflection", body[:800], 0.9)
 
     async def _request_and_check(self, url: str, method: str, category: str, body: Optional[str]) -> Optional[int]:
+        status: Optional[int] = None
         try:
             async with self.sem:
                 start = asyncio.get_event_loop().time()
@@ -142,6 +147,7 @@ class FuzzCoordinator:
                 text = (r.text or "")[:8000]
                 status = r.status_code
         except Exception:
+            await self._update_rate(True)
             return None
 
         async def confirm() -> tuple[str, float]:
@@ -188,6 +194,7 @@ class FuzzCoordinator:
                 conf = 0.9 if confirm_hit else 0.4
                 await self._record(url, method, "SSRF indicator reflected", text, conf)
 
+        await self._update_rate(status is None or status >= 500)
         return status
 
     async def _record(self, url: str, method: str, label: str, evidence_body: str, confidence: float) -> None:
@@ -205,3 +212,18 @@ class FuzzCoordinator:
         else:
             # Low-confidence telemetry; keep noisy findings out of the formal report
             print(f"[{confidence:.2f}] {label} at {url}")
+
+    async def _update_rate(self, errored: bool) -> None:
+        if not getattr(self.settings, "ADAPTIVE_RATE", False):
+            return
+        self._error_window.append(1 if errored else 0)
+        if len(self._error_window) < self._error_window.maxlen:
+            return
+        error_rate = sum(self._error_window) / len(self._error_window)
+        if error_rate > 0.5 and self._current_concurrency > 1:
+            self._current_concurrency = max(1, self._current_concurrency // 2)
+            self.sem = asyncio.Semaphore(self._current_concurrency)
+            await asyncio.sleep(1)
+        elif error_rate < 0.2 and self._current_concurrency < self._max_concurrency:
+            self._current_concurrency += 1
+            self.sem = asyncio.Semaphore(self._current_concurrency)
