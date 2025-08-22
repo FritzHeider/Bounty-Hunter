@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: list[str] = Field(default_factory=list, env="BH_ALLOWED_HOSTS")
     MAX_RESPONSE_SIZE: int = Field(default=1_000_000, env="BH_MAX_RESPONSE_SIZE")
     MAX_REDIRECT_DEPTH: int = Field(default=5, env="BH_MAX_REDIRECT_DEPTH")
+    JITTER_MAX_S: float = Field(default=0.5, env="BH_JITTER_MAX_S")
 
     # LLM
     LLM_PROVIDER: str = "none"  # none|openai

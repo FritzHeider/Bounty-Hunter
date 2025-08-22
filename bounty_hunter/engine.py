@@ -50,7 +50,6 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
         endpoints = sorted(set(harvest_res.endpoints))
 
         console.print(f"[green]\u2714[/] Harvested [bold]{len(endpoints)}[/] candidate endpoints")
-
         if settings.ALLOWED_HOSTS:
             before = len(endpoints)
             endpoints = [e for e in endpoints if URL(e).host and any(URL(e).host.endswith(h) for h in settings.ALLOWED_HOSTS)]
