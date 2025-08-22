@@ -40,7 +40,7 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as p:
             p.add_task(description="Harvesting endpoints…", total=None)
             harvest_res = await harvest_from_targets(client, targets, settings)
-        endpoints = sorted(set(harvest_res.endpoints))
+        endpoints = sorted(set(harvest_res.endpoints + subs))
 
         console.print(f"[green]\u2714[/] Harvested [bold]{len(endpoints)}[/] candidate endpoints")
 
