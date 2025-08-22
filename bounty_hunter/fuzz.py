@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import asyncio, random
 from dataclasses import dataclass
 from typing import Optional, Sequence, Iterable, Mapping
 
@@ -53,9 +53,18 @@ class FuzzCoordinator:
         self.sem = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENCY", 10))
         self._rtt_threshold = float(getattr(settings, "RESPONSE_TIME_THRESHOLD", DEFAULT_RTT_THRESHOLD))
         self._confidence_threshold = float(getattr(settings, "CONFIDENCE_THRESHOLD", 0.0))
+        self._jitter = float(getattr(settings, "JITTER_MAX_S", 0.5))
+        self._max_body = int(getattr(settings, "MAX_RESPONSE_SIZE", 1_000_000))
+        self._max_redirects = int(getattr(settings, "MAX_REDIRECT_DEPTH", 5))
+        self._allowed_hosts = set(getattr(settings, "ALLOWED_HOSTS", []))
 
     async def run(self, endpoints: Sequence[str]) -> None:
-        await asyncio.gather(*(self.scan_endpoint(u) for u in endpoints))
+        async def _launch(u: str) -> None:
+            if self._jitter:
+                await asyncio.sleep(random.uniform(0, self._jitter))
+            await self.scan_endpoint(u)
+
+        await asyncio.gather(*(_launch(u) for u in endpoints))
 
     async def scan_endpoint(self, url: str) -> None:
         await self._fuzz_get(url)
@@ -134,31 +143,66 @@ class FuzzCoordinator:
                 await self._record(url, "GET", "Header-reflection", body[:800], 0.9)
 
     async def _request_and_check(self, url: str, method: str, category: str, body: Optional[str]) -> Optional[int]:
-        try:
-            async with self.sem:
-                start = asyncio.get_event_loop().time()
-                r = await self.client.request(method, url, content=body)
-                elapsed = asyncio.get_event_loop().time() - start
-                text = (r.text or "")[:8000]
-                status = r.status_code
-        except Exception:
-            return None
+        depth = 0
+        current_url = url
+        text = ""
+        status: Optional[int] = None
+        elapsed = 0.0
+        headers = {}
+
+        while True:
+            try:
+                async with self.sem:
+                    start = asyncio.get_event_loop().time()
+                    async with self.client.stream(method, current_url, content=body, follow_redirects=False) as r:
+                        status = r.status_code
+                        headers = r.headers
+                        cl = headers.get("Content-Length")
+                        if cl and int(cl) > self._max_body:
+                            return status
+                        content = await r.aread(self._max_body + 1)
+                    elapsed = asyncio.get_event_loop().time() - start
+            except Exception:
+                return None
+
+            if len(content) > self._max_body:
+                return status
+            text = content.decode(errors="ignore")
+
+            if status in {301, 302, 303, 307, 308} and headers.get("Location"):
+                depth += 1
+                if depth > self._max_redirects:
+                    return status
+                nxt = headers.get("Location")
+                next_url = str(URL(nxt)) if "://" in nxt else str(URL(current_url).join(URL(nxt)))
+                if self._allowed_hosts and not any(URL(next_url).host.endswith(h) for h in self._allowed_hosts):
+                    return status
+                current_url = next_url
+                continue
+            break
 
         async def confirm() -> tuple[str, float]:
             try:
                 async with self.sem:
                     s = asyncio.get_event_loop().time()
-                    r2 = await self.client.request(method, url, content=body)
-                    return (r2.text or "")[:8000], asyncio.get_event_loop().time() - s
+                    async with self.client.stream(method, current_url, content=body, follow_redirects=False) as r2:
+                        cl = r2.headers.get("Content-Length")
+                        if cl and int(cl) > self._max_body:
+                            return "", 0.0
+                        data = await r2.aread(self._max_body + 1)
+                    celapsed = asyncio.get_event_loop().time() - s
             except Exception:
                 return "", 0.0
+            if len(data) > self._max_body:
+                return "", 0.0
+            return data.decode(errors="ignore"), celapsed
 
         # XSS
         if category.startswith("XSS") or category == "LLM-variant":
             if any(sig.search(text) for sig in XSS_PATTERNS):
                 ctext, _ = await confirm()
                 conf = 0.9 if any(sig.search(ctext) for sig in XSS_PATTERNS) else 0.4
-                await self._record(url, method, "Reflected XSS (indicator)", text, conf)
+                await self._record(current_url, method, "Reflected XSS (indicator)", text, conf)
 
         # SQLi (error-based / time-based)
         if category.startswith("SQLi") or category == "LLM-variant":
@@ -170,14 +214,14 @@ class FuzzCoordinator:
                 confirm_delay = celapsed > self._rtt_threshold
                 conf = 0.9 if (hit and confirm_hit) or (delay and confirm_delay) else 0.4
                 label = "Potential SQLi (error-based)" if hit else "Potential SQLi (time-based)"
-                await self._record(url, method, label, text, conf)
+                await self._record(current_url, method, label, text, conf)
 
         # SSTI
         if category.startswith("SSTI") or category == "LLM-variant":
             if any(sig.search(text) for sig in SSTI_PATTERNS):
                 ctext, _ = await confirm()
                 conf = 0.9 if any(sig.search(ctext) for sig in SSTI_PATTERNS) else 0.4
-                await self._record(url, method, "Template Injection indicator", text, conf)
+                await self._record(current_url, method, "Template Injection indicator", text, conf)
 
         # SSRF (basic reflection heuristic)
         if category.startswith("SSRF") or category == "LLM-variant":
@@ -186,7 +230,7 @@ class FuzzCoordinator:
                 ctext, _ = await confirm()
                 confirm_hit = ("169.254.169.254" in ctext) or ("127.0.0.1" in ctext) or ("localhost" in ctext)
                 conf = 0.9 if confirm_hit else 0.4
-                await self._record(url, method, "SSRF indicator reflected", text, conf)
+                await self._record(current_url, method, "SSRF indicator reflected", text, conf)
 
         return status
 

@@ -4,6 +4,7 @@ import redis.asyncio as redis
 from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from yarl import URL
 from .config import Settings
 from .harvest import harvest_from_targets
 from .workflow import WorkflowAnalyzer
@@ -44,6 +45,15 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
 
         console.print(f"[green]\u2714[/] Harvested [bold]{len(endpoints)}[/] candidate endpoints")
 
+        if settings.ALLOWED_HOSTS:
+            before = len(endpoints)
+            endpoints = [e for e in endpoints if URL(e).host and any(URL(e).host.endswith(h) for h in settings.ALLOWED_HOSTS)]
+            skipped = before - len(endpoints)
+            if skipped:
+                console.print(f"[yellow]![/] Skipped [bold]{skipped}[/] endpoints not in ALLOWED_HOSTS")
+            if not endpoints:
+                console.print("[bold red]No endpoints within allowed hosts."); return
+
         analyzer = WorkflowAnalyzer(harvest_res.forms, harvest_res.navigations, llm)
         for wf, issues, llm_notes in await analyzer.analyze():
             if issues or llm_notes:
@@ -57,6 +67,14 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
         if mined:
             console.print(f"[cyan]＋[/] JS miner discovered [bold]{len(mined)}[/] extra candidates"); endpoints.extend(mined)
         endpoints = sorted(set(endpoints))
+        if settings.ALLOWED_HOSTS:
+            before = len(endpoints)
+            endpoints = [e for e in endpoints if URL(e).host and any(URL(e).host.endswith(h) for h in settings.ALLOWED_HOSTS)]
+            skipped = before - len(endpoints)
+            if skipped:
+                console.print(f"[yellow]![/] Skipped [bold]{skipped}[/] endpoints not in ALLOWED_HOSTS")
+            if not endpoints:
+                console.print("[bold red]No endpoints within allowed hosts."); return
         await rc.delete(settings.REDIS_QUEUE)
         for i in range(0, len(endpoints), settings.CHUNK_SIZE):
             chunk = endpoints[i:i + settings.CHUNK_SIZE]
