@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     MAX_CONCURRENCY: int = Field(default=40, env="BH_MAX_CONCURRENCY")
     PER_HOST: int = Field(default=5, env="BH_PER_HOST")
 
+    # Credential sets for auth testing
+    USER_ROLES: dict[str, dict] = Field(default_factory=dict, env="BH_USER_ROLES")
+
     # LLM
     LLM_PROVIDER: str = "none"  # none|openai
     OPENAI_API_KEY: str | None = None
