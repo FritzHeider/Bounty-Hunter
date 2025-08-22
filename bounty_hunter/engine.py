@@ -5,6 +5,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from .config import Settings
+from .http_client import BHClient
 from .harvest import harvest_from_targets
 from .workflow import WorkflowAnalyzer
 from .fuzz import FuzzCoordinator
@@ -29,7 +30,7 @@ async def run_scan(targets_path: Path, outdir: Path, program: str, settings: Set
     limits = httpx.Limits(max_connections=settings.MAX_CONCURRENCY, max_keepalive_connections=settings.MAX_CONCURRENCY)
     timeout = httpx.Timeout(settings.TIMEOUT_S)
     transport = httpx.HTTPTransport(retries=settings.RETRIES)
-    async with httpx.AsyncClient(http2=True, limits=limits, timeout=timeout, transport=transport, follow_redirects=False) as client:
+    async with BHClient(settings=settings, http2=True, limits=limits, timeout=timeout, transport=transport, follow_redirects=False) as client:
         rc = redis.from_url(settings.REDIS_URL, decode_responses=True)
 
         subs = await enumerate_subdomains(client, targets)
