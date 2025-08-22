@@ -67,6 +67,8 @@ class FuzzCoordinator:
             return
 
         async def try_payloads(category: str, probes: Sequence[str]) -> None:
+            block_codes = {403, 406}
+            status_counts: dict[int, int] = {}
             for key in COMMON_KEYS:
                 for p in probes:
                     for variant in mutate.generate_variants(p):
@@ -74,7 +76,9 @@ class FuzzCoordinator:
                         q[key] = variant
                         u = str(base.with_query(q))
                         status = await self._request_and_check(u, "GET", category, None)
-                        if status in (403, 406):  # WAF? try alternates
+                        if status is not None:
+                            status_counts[status] = status_counts.get(status, 0) + 1
+                        if status in block_codes:  # WAF? try alternates
                             for alt in mutate.alternate_encodings(variant):
                                 q[key] = alt
                                 u2 = str(base.with_query(q))
@@ -93,6 +97,7 @@ class FuzzCoordinator:
         except Exception:
             llm_payloads = []
 
+        block_codes = {403, 406}
         for p in llm_payloads:
             for key in COMMON_KEYS:
                 for variant in mutate.generate_variants(p):
@@ -100,7 +105,7 @@ class FuzzCoordinator:
                     q[key] = variant
                     u = str(base.with_query(q))
                     status = await self._request_and_check(u, "GET", "LLM-variant", None)
-                    if status in (403, 406):
+                    if status in block_codes:
                         for alt in mutate.alternate_encodings(variant):
                             q[key] = alt
                             u2 = str(base.with_query(q))
