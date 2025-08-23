@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 from pathlib import Path
+import json
 import typer
 from rich.console import Console
 from .config import Settings
@@ -19,16 +20,25 @@ def scan(
     per_host: int = typer.Option(None),
     template: str = typer.Option("index"),
     oob: bool = typer.Option(False),
+    resume: bool = typer.Option(False, help="Resume from saved state"),
+    modules: str = typer.Option("modules.json", help="Module configuration file"),
     attack_chain: str = typer.Option(None, help="Name of attack chain in scripts/attack_flows"),
 ):
     s = Settings()
-    if max_concurrency: s.MAX_CONCURRENCY = max_concurrency
-    if per_host: s.PER_HOST = per_host
-    s.LLM_PROVIDER = llm.lower(); s.OOB_ENABLED = oob
+    if max_concurrency:
+        s.MAX_CONCURRENCY = max_concurrency
+    if per_host:
+        s.PER_HOST = per_host
+    module_flags = {}
+    modules_path = Path(modules)
+    if modules_path.exists():
+        module_flags = json.loads(modules_path.read_text())
+    s.LLM_PROVIDER = llm.lower()
+    s.OOB_ENABLED = oob or module_flags.get("oob", False)
     console.rule("[bold cyan]AI Bug Bounty Hunter")
     console.print(f"Program: [bold]{program}[/] | LLM: [bold]{s.LLM_PROVIDER}[/] | OOB: [bold]{s.OOB_ENABLED}[/]")
     console.print(f"Concurrency: {s.MAX_CONCURRENCY} (per-host {s.PER_HOST})\n")
-    asyncio.run(run_scan(targets, outdir, program, s, template=template))
+    asyncio.run(run_scan(targets, outdir, program, s, template=template, resume=resume, modules=module_flags))
     if attack_chain:
         from .lotl import run_attack_chain
 

@@ -1,0 +1,12 @@
+{
+  "subdomains": true,
+  "workflow": true,
+  "jsminer": true,
+  "fuzz": true,
+  "redirects": true,
+  "auth": true,
+  "signedurls": true,
+  "jwt": true,
+  "fingerprint": true,
+  "oob": false
+}
