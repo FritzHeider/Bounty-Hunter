@@ -1,7 +1,9 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Tuple, Dict, Any, List
+from typing import Tuple, Dict, Any, List, Set
+from collections import defaultdict
+from urllib.parse import urlparse, parse_qs
 
 from slugify import slugify
 from jinja2 import Environment, DictLoader, select_autoescape
@@ -12,6 +14,7 @@ except Exception:  # soft-dep fallback
     CVSS3 = None  # type: ignore
 
 from .llm import LLM
+from .chain_analyzer import ChainAnalyzer
 
 
 def calculate_cvss(vector: str) -> Tuple[float, str]:
@@ -35,6 +38,8 @@ TEMPLATES: Dict[str, str] = {
         "# {{ title }}\n\n"
         "{% for item in items %}- [{{ item.name }}]({{ item.filename }}) — "
         "{{ item.category }} ({{ item.severity or 'TBD' }})\n{% endfor %}\n"
+        "{% if chains %}## Chained Recommendations\n"
+        "{% for c in chains %}- {{ c }}\n{% endfor %}\n{% endif %}"
     ),
     "h1": (
         "# {{ title }} (HackerOne)\n\n"
@@ -77,6 +82,7 @@ class ReportWriter:
     base: Path
     program: str
     template: str = "index"
+    graph: Dict[str, Set[str]] = field(default_factory=dict)
 
     def _dir(self) -> Path:
         d = self.base
@@ -109,7 +115,7 @@ class ReportWriter:
         score, severity = calculate_cvss(vector) if vector else (0.0, "")
 
         # Optional fields
-        headers = getattr(f, "headers", "") or ""
+        headers = self._scrub_headers(getattr(f, "headers", "") or "")
         body = getattr(f, "body", "") or ""
         confidence = float(getattr(f, "confidence", 0.0))
 
@@ -163,20 +169,21 @@ class ReportWriter:
             else ""
         )
 
+        scrubbed_headers = self._scrub_headers(headers)
         md = (
             f"# {category}\n\n"
             f"**Program:** {self.program}\n"
             f"**Endpoint:** `{endpoint}`\n"
             f"{cvss_block}"
             f"## Proof of Concept\n```bash\n{curl}\n```\n"
-            f"{f'## Request Headers\n```http\n{headers}\n```\n' if headers else ''}"
+            f"{f'## Request Headers\n```http\n{scrubbed_headers}\n```\n' if scrubbed_headers else ''}"
             f"{f'## Request Body\n```http\n{body}\n```\n' if body else ''}"
             f"## Evidence (Truncated)\n```text\n{evidence}\n```\n"
             f"{(artifact + '\n') if artifact else ''}"
         )
         path.write_text(md, encoding="utf-8")
 
-    def finish_index(self) -> str:
+    def finish_index(self, scope_note: str = "") -> str:
         """
         Render an index for all findings in the directory (excluding INDEX.md).
         Returns the markdown string (caller may choose to write it).
@@ -193,7 +200,7 @@ class ReportWriter:
                     "category": first,
                     "endpoint": self._extract_field(txt, "Endpoint:"),
                     "curl": self._extract_block(txt, "Proof of Concept"),
-                    "headers": self._extract_block(txt, "Request Headers"),
+                    "headers": self._scrub_headers(self._extract_block(txt, "Request Headers")),
                     "body": self._extract_block(txt, "Request Body"),
                     "evidence": self._extract_block(txt, "Evidence"),
                     "impact": self._extract_section(txt, "Impact"),
@@ -202,12 +209,40 @@ class ReportWriter:
                     "artifact": self._artifact_snippet(fpath.stem),
                 }
             )
+        # Build a graph linking findings with shared parameters or endpoints
+        param_map: Dict[str, Set[str]] = defaultdict(set)
+        path_map: Dict[str, Set[str]] = defaultdict(set)
+        for item in items:
+            endpoint = item.get("endpoint", "")
+            if not endpoint:
+                continue
+            parsed = urlparse(endpoint)
+            if parsed.path:
+                path_map[parsed.path].add(item["name"])
+            for p in parse_qs(parsed.query).keys():
+                param_map[p].add(item["name"])
+
+        graph: Dict[str, Set[str]] = {item["name"]: set() for item in items}
+        for names in list(param_map.values()) + list(path_map.values()):
+            for src in names:
+                graph[src].update(names - {src})
+        self.graph = graph
+
+        # Analyze potential exploit chains
+        chains = ChainAnalyzer(graph, items).suggest()
+
         tpl = env.get_template(self.template if self.template in TEMPLATES else "index")
-        return tpl.render(title=f"Findings Index — {self.program}", items=items, program=self.program)
+        return tpl.render(
+            title=f"Findings Index — {self.program}",
+            items=items,
+            program=self.program,
+            chains=chains,
+        )
+
 
     # Optional convenience: write the index file to disk.
-    def write_index(self) -> Path:
-        content = self.finish_index()
+    def write_index(self, scope_note: str = "") -> Path:
+        content = self.finish_index(scope_note)
         out = self._dir() / "INDEX.md"
         out.write_text(content, encoding="utf-8")
         return out
@@ -239,6 +274,28 @@ class ReportWriter:
     def _extract_section(txt: str, header: str) -> str:
         i = txt.lower().find(header.lower())
         return "" if i == -1 else txt[i : i + 400]
+
+    @staticmethod
+    def _scrub_headers(headers: str) -> str:
+        """
+        Redact sensitive header values before they are written to disk.
+        """
+        sensitive = {
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+            "x-api-key",
+            "x-api-token",
+        }
+        cleaned = []
+        for line in headers.splitlines():
+            name, sep, value = line.partition(":")
+            if sep and name.strip().lower() in sensitive:
+                cleaned.append(f"{name}{sep} [REDACTED]")
+            else:
+                cleaned.append(line)
+        return "\n".join(cleaned)
 
     @staticmethod
     def _artifact_snippet(slug: str) -> str:

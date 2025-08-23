@@ -1,0 +1,7 @@
+# Example multi-stage attack chain using existing system tools.
+# Stage 1: Display curl version
+curl --version >/tmp/curl_version
+# Stage 2: Display wget version
+wget --version >/tmp/wget_version
+# Stage 3: Output collected information
+cat /tmp/curl_version /tmp/wget_version
