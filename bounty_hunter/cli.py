@@ -22,6 +22,7 @@ def scan(
     oob: bool = typer.Option(False),
     resume: bool = typer.Option(False, help="Resume from saved state"),
     modules: str = typer.Option("modules.json", help="Module configuration file"),
+    attack_chain: str = typer.Option(None, help="Name of attack chain in scripts/attack_flows"),
 ):
     s = Settings()
     if max_concurrency:
@@ -38,3 +39,12 @@ def scan(
     console.print(f"Program: [bold]{program}[/] | LLM: [bold]{s.LLM_PROVIDER}[/] | OOB: [bold]{s.OOB_ENABLED}[/]")
     console.print(f"Concurrency: {s.MAX_CONCURRENCY} (per-host {s.PER_HOST})\n")
     asyncio.run(run_scan(targets, outdir, program, s, template=template, resume=resume, modules=module_flags))
+    if attack_chain:
+        from .lotl import run_attack_chain
+
+        console.rule(f"[bold red]Executing attack chain: {attack_chain}")
+        for res in run_attack_chain(attack_chain):
+            if res.stdout:
+                console.print(res.stdout)
+            if res.stderr:
+                console.print(res.stderr, style="red")

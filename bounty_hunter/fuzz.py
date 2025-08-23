@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, Sequence, Iterable, Mapping
+from collections import deque
 
 import httpx
 from yarl import URL
@@ -50,7 +51,10 @@ class FuzzCoordinator:
         self.llm = llm
         self.reporter = reporter
         self.settings = settings
-        self.sem = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENCY", 10))
+        self._max_concurrency = getattr(settings, "MAX_CONCURRENCY", 10)
+        self._current_concurrency = self._max_concurrency
+        self.sem = asyncio.Semaphore(self._current_concurrency)
+        self._error_window = deque(maxlen=20)
         self._rtt_threshold = float(getattr(settings, "RESPONSE_TIME_THRESHOLD", DEFAULT_RTT_THRESHOLD))
         self._confidence_threshold = float(getattr(settings, "CONFIDENCE_THRESHOLD", 0.0))
 
@@ -67,6 +71,8 @@ class FuzzCoordinator:
             return
 
         async def try_payloads(category: str, probes: Sequence[str]) -> None:
+            block_codes = {403, 406}
+            status_counts: dict[int, int] = {}
             for key in COMMON_KEYS:
                 for p in probes:
                     for variant in mutate.generate_variants(p):
@@ -74,7 +80,9 @@ class FuzzCoordinator:
                         q[key] = variant
                         u = str(base.with_query(q))
                         status = await self._request_and_check(u, "GET", category, None)
-                        if status in (403, 406):  # WAF? try alternates
+                        if status is not None:
+                            status_counts[status] = status_counts.get(status, 0) + 1
+                        if status in block_codes:  # WAF? try alternates
                             for alt in mutate.alternate_encodings(variant):
                                 q[key] = alt
                                 u2 = str(base.with_query(q))
@@ -93,6 +101,7 @@ class FuzzCoordinator:
         except Exception:
             llm_payloads = []
 
+        block_codes = {403, 406}
         for p in llm_payloads:
             for key in COMMON_KEYS:
                 for variant in mutate.generate_variants(p):
@@ -100,7 +109,7 @@ class FuzzCoordinator:
                     q[key] = variant
                     u = str(base.with_query(q))
                     status = await self._request_and_check(u, "GET", "LLM-variant", None)
-                    if status in (403, 406):
+                    if status in block_codes:
                         for alt in mutate.alternate_encodings(variant):
                             q[key] = alt
                             u2 = str(base.with_query(q))
@@ -134,6 +143,7 @@ class FuzzCoordinator:
                 await self._record(url, "GET", "Header-reflection", body[:800], 0.9)
 
     async def _request_and_check(self, url: str, method: str, category: str, body: Optional[str]) -> Optional[int]:
+        status: Optional[int] = None
         try:
             async with self.sem:
                 start = asyncio.get_event_loop().time()
@@ -142,9 +152,11 @@ class FuzzCoordinator:
                 text = (r.text or "")[:8000]
                 status = r.status_code
         except Exception:
+            await self._update_rate(True)
             return None
 
         async def confirm() -> tuple[str, float]:
+            """Issue a second request to verify initial indicators."""
             try:
                 async with self.sem:
                     s = asyncio.get_event_loop().time()
@@ -153,45 +165,59 @@ class FuzzCoordinator:
             except Exception:
                 return "", 0.0
 
-        # XSS
+        # Collect indicator hits from the initial response.
+        xss_hit = False
+        sqli_err = False
+        sqli_delay = False
+        ssti_hit = False
+        ssrf_hit = False
+
         if category.startswith("XSS") or category == "LLM-variant":
-            if any(sig.search(text) for sig in XSS_PATTERNS):
-                ctext, _ = await confirm()
-                conf = 0.9 if any(sig.search(ctext) for sig in XSS_PATTERNS) else 0.4
-                await self._record(url, method, "Reflected XSS (indicator)", text, conf)
+            xss_hit = any(sig.search(text) for sig in XSS_PATTERNS)
 
-        # SQLi (error-based / time-based)
         if category.startswith("SQLi") or category == "LLM-variant":
-            hit = any(sig.search(text) for sig in SQLI_ERRORS)
-            delay = elapsed > self._rtt_threshold
-            if hit or delay:
-                ctext, celapsed = await confirm()
-                confirm_hit = any(sig.search(ctext) for sig in SQLI_ERRORS)
-                confirm_delay = celapsed > self._rtt_threshold
-                conf = 0.9 if (hit and confirm_hit) or (delay and confirm_delay) else 0.4
-                label = "Potential SQLi (error-based)" if hit else "Potential SQLi (time-based)"
-                await self._record(url, method, label, text, conf)
+            sqli_err = any(sig.search(text) for sig in SQLI_ERRORS)
+            sqli_delay = elapsed > self._rtt_threshold
 
-        # SSTI
         if category.startswith("SSTI") or category == "LLM-variant":
-            if any(sig.search(text) for sig in SSTI_PATTERNS):
-                ctext, _ = await confirm()
-                conf = 0.9 if any(sig.search(ctext) for sig in SSTI_PATTERNS) else 0.4
-                await self._record(url, method, "Template Injection indicator", text, conf)
+            ssti_hit = any(sig.search(text) for sig in SSTI_PATTERNS)
 
-        # SSRF (basic reflection heuristic)
         if category.startswith("SSRF") or category == "LLM-variant":
-            hit = ("169.254.169.254" in text) or ("127.0.0.1" in text) or ("localhost" in text)
-            if hit:
-                ctext, _ = await confirm()
-                confirm_hit = ("169.254.169.254" in ctext) or ("127.0.0.1" in ctext) or ("localhost" in ctext)
-                conf = 0.9 if confirm_hit else 0.4
-                await self._record(url, method, "SSRF indicator reflected", text, conf)
+            ssrf_hit = ("169.254.169.254" in text) or ("127.0.0.1" in text) or ("localhost" in text)
 
+        # Only perform a confirmation request when any indicator is present.
+        ctext = ""
+        celapsed = 0.0
+        if xss_hit or sqli_err or sqli_delay or ssti_hit or ssrf_hit:
+            ctext, celapsed = await confirm()
+
+        if xss_hit:
+            conf = 0.9 if any(sig.search(ctext) for sig in XSS_PATTERNS) else 0.4
+            await self._record(url, method, "Reflected XSS (indicator)", text, conf)
+
+        if sqli_err or sqli_delay:
+            confirm_hit = any(sig.search(ctext) for sig in SQLI_ERRORS)
+            confirm_delay = celapsed > self._rtt_threshold
+            conf = 0.9 if (sqli_err and confirm_hit) or (sqli_delay and confirm_delay) else 0.4
+            label = "Potential SQLi (error-based)" if sqli_err else "Potential SQLi (time-based)"
+            await self._record(url, method, label, text, conf)
+
+        if ssti_hit:
+            conf = 0.9 if any(sig.search(ctext) for sig in SSTI_PATTERNS) else 0.4
+            await self._record(url, method, "Template Injection indicator", text, conf)
+
+        if ssrf_hit:
+            confirm_hit = ("169.254.169.254" in ctext) or ("127.0.0.1" in ctext) or ("localhost" in ctext)
+            conf = 0.9 if confirm_hit else 0.4
+            await self._record(url, method, "SSRF indicator reflected", text, conf)
+
+        await self._update_rate(status is None or status >= 500)
         return status
 
     async def _record(self, url: str, method: str, label: str, evidence_body: str, confidence: float) -> None:
+        msg = f"[{confidence:.2f}] {label} at {url}"
         if confidence >= self._confidence_threshold:
+            print(msg)
             curl = f"curl -i -X {method} '{url}'"
             f = Finding(
                 url=url,
@@ -205,3 +231,19 @@ class FuzzCoordinator:
         else:
             # Low-confidence telemetry; keep noisy findings out of the formal report
             print(f"[{confidence:.2f}] {label} at {url}")
+
+    async def _update_rate(self, errored: bool) -> None:
+        if not getattr(self.settings, "ADAPTIVE_RATE", False):
+            return
+        self._error_window.append(1 if errored else 0)
+        if len(self._error_window) < self._error_window.maxlen:
+            return
+        error_rate = sum(self._error_window) / len(self._error_window)
+        if error_rate > 0.5 and self._current_concurrency > 1:
+            self._current_concurrency = max(1, self._current_concurrency // 2)
+            self.sem = asyncio.Semaphore(self._current_concurrency)
+            await asyncio.sleep(1)
+        elif error_rate < 0.2 and self._current_concurrency < self._max_concurrency:
+            self._current_concurrency += 1
+            self.sem = asyncio.Semaphore(self._current_concurrency)
+            print(msg)
