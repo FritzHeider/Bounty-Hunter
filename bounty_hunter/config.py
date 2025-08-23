@@ -8,10 +8,12 @@ class Settings(BaseSettings):
     RETRIES: int = Field(default=2, env="BH_RETRY")
     MAX_CONCURRENCY: int = Field(default=40, env="BH_MAX_CONCURRENCY")
     PER_HOST: int = Field(default=5, env="BH_PER_HOST")
+    ADAPTIVE_RATE: bool = Field(default=False, env="BH_ADAPTIVE_RATE")
     PROXY_URL: str | None = Field(default=None, env="BH_PROXY_URL")
 
     # Credential sets for auth testing
     USER_ROLES: dict[str, dict] = Field(default_factory=dict, env="BH_USER_ROLES")
+ 
 
     # LLM
     LLM_PROVIDER: str = "none"  # none|openai
