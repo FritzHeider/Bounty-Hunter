@@ -58,6 +58,19 @@ Results are written as Markdown under `artifacts/`.
 - `BH_PER_HOST` – per-host concurrency limit (default 5)
 - `BH_ADAPTIVE_RATE` – enable adaptive throttling
 - `BH_PROXY_URL` – HTTP/SOCKS proxy URL
+- `BH_USER_ROLES` – JSON map of named role contexts for auth testing
+- `BH_ROLE_TOKENS` – JSON map of role name to auth token value
+- `BH_CONFIDENCE_THRESHOLD` – minimum confidence to report a finding (default 0.5)
+- `LLM_PROVIDER` – LLM provider name (default `none`)
+- `OPENAI_API_KEY` – OpenAI API key for AI triage
+- `OPENAI_MODEL` – OpenAI model name (default `gpt-4o-mini`)
+- `OOB_ENABLED` – enable out-of-band SSRF detection (default false)
+- `CANARY_DOMAIN` – custom canary domain for OOB checks
+- `CANARY_LABEL_PREFIX` – prefix label for generated canaries
+- `INTERACTSH_SERVER` – custom Interactsh server URL
+- `INTERACTSH_TOKEN` – Interactsh auth token
+- `INTERACTSH_POLL_SECONDS` – Interactsh polling interval in seconds
+- `CVE_FAVICON_DB` – path to local CVE favicon database
 - `BH_REDIS_URL` – Redis connection string for task queue
 - `BH_REDIS_QUEUE` – name of Redis queue
 - `BH_CHUNK_SIZE` – number of targets per task (default 50)
